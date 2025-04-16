@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::CLIENT_NOT_FOUND_ERROR_MSG;
 use crate::admin::FluvioAdminJS;
 use crate::consumer::PartitionConsumerJS;
@@ -7,6 +9,7 @@ use crate::error::FluvioErrorJS;
 use fluvio::TopicProducerConfig;
 use fluvio::Compression;
 use fluvio::TopicProducerConfigBuilder;
+use node_bindgen::core::JSValue;
 use tracing::debug;
 
 use fluvio::Fluvio;
@@ -19,7 +22,7 @@ use node_bindgen::sys::napi_value;
 use node_bindgen::core::JSClass;
 use node_bindgen::core::val::JsObject;
 
-use crate::{optional_property, must_property};
+use crate::{optional_property};
 
 impl From<Fluvio> for FluvioJS {
     fn from(inner: Fluvio) -> Self {
@@ -93,79 +96,89 @@ impl FluvioJS {
     async fn topic_producer_with_config(
         &mut self,
         topic: String,
-        config_obj: JsObject,
+        config: TopicProducerConfigWrapper,
     ) -> Result<TopicProducerJS, FluvioErrorJS> {
+        let config = config.inner;
+
         if let Some(client) = &mut self.inner {
-            // Start with a default config
-            let mut config = TopicProducerConfigBuilder::default();
-
-            // Handle properties manually without using the macros directly
-            if let Some(prop) = config_obj.get_property("batchSize").map_err(|e| {
-                FluvioErrorJS::new(format!("Error getting batchSize property: {}", e))
-            })? {
-                if let Ok(batch_size) = prop.as_value::<u32>() {
-                    // Use the with_* methods which return a new instance
-                    config = config.batch_size(batch_size as usize);
-                }
-            }
-
-            if let Some(prop) = config_obj.get_property("timeoutMs").map_err(|e| {
-                FluvioErrorJS::new(format!("Error getting timeoutMs property: {}", e))
-            })? {
-                if let Ok(timeout_ms) = prop.as_value::<f64>() {
-                    config = config.timeout(std::time::Duration::from_millis(timeout_ms as u64));
-                }
-            }
-
-            if let Some(prop) = config_obj.get_property("lingerMs").map_err(|e| {
-                FluvioErrorJS::new(format!("Error getting lingerMs property: {}", e))
-            })? {
-                if let Ok(linger_ms) = prop.as_value::<f64>() {
-                    config = config.linger(std::time::Duration::from_millis(linger_ms as u64));
-                }
-            }
-
-            if let Some(prop) = config_obj.get_property("maxRequestSize").map_err(|e| {
-                FluvioErrorJS::new(format!("Error getting maxRequestSize property: {}", e))
-            })? {
-                if let Ok(max_request_size) = prop.as_value::<u32>() {
-                    config = config.max_request_size(max_request_size as usize);
-                }
-            }
-
-            if let Some(prop) = config_obj.get_property("compression").map_err(|e| {
-                FluvioErrorJS::new(format!("Error getting compression property: {}", e))
-            })? {
-                if let Ok(compression_type) = prop.as_value::<String>() {
-                    let compression = match compression_type.as_str() {
-                        "none" => None,
-                        "gzip" => Some(Compression::Gzip),
-                        "snappy" => Some(Compression::Snappy),
-                        "lz4" => Some(Compression::Lz4),
-                        _ => {
-                            return Err(FluvioErrorJS::new(format!(
-                                "Invalid compression type: {}",
-                                compression_type
-                            )))
-                        }
-                    };
-
-                    if let Some(compression) = compression {
-                        config = config.compression(compression);
-                    }
-                }
-            }
-
             Ok(TopicProducerJS::from(
-                client
-                    .topic_producer_with_config(
-                        topic,
-                        config.build().expect("Failed to build config"),
-                    )
-                    .await?,
+                client.topic_producer_with_config(topic, config).await?,
             ))
         } else {
             Err(FluvioErrorJS::new(CLIENT_NOT_FOUND_ERROR_MSG.to_owned()))
+        }
+    }
+}
+
+// TopicProducerConfigBuilder is used to create a TopicProducerConfig
+//
+// TopicProducerConfigBuilder::default()
+//     .compression(Compression::Lz4)
+//     .max_request_size(1024 * 1024)
+//     .batch_size(1024)
+//     .batch_queue_size(1024)
+//     .linger(Duration::from_millis(100))
+//     .build()
+//     .unwrap();
+
+pub struct TopicProducerConfigWrapper {
+    pub inner: TopicProducerConfig,
+}
+
+impl JSValue<'_> for TopicProducerConfigWrapper {
+    fn convert_to_rust(env: &JsEnv, js_value: napi_value) -> Result<Self, NjError> {
+        debug!("converting topic producer config from JS");
+        if let Ok(js_obj) = env.convert_to_rust::<JsObject>(js_value) {
+            let mut builder = TopicProducerConfigBuilder::default();
+
+            // Extract compression if provided
+            if let Some(compression_str) = optional_property!("compression", String, js_obj) {
+                let compression = match compression_str.as_str() {
+                    "none" => Compression::None,
+                    "gzip" => Compression::Gzip,
+                    "snappy" => Compression::Snappy,
+                    "lz4" => Compression::Lz4,
+                    "zstd" => Compression::Zstd,
+                    _ => {
+                        return Err(NjError::Other(format!(
+                            "Invalid compression type: {}",
+                            compression_str
+                        )))
+                    }
+                };
+                builder = builder.compression(compression);
+            }
+
+            // Extract max_request_size if provided
+            if let Some(max_request_size) = optional_property!("maxRequestSize", i64, js_obj) {
+                builder = builder.max_request_size(max_request_size as usize);
+            }
+
+            // Extract batch_size if provided
+            if let Some(batch_size) = optional_property!("batchSize", i64, js_obj) {
+                builder = builder.batch_size(batch_size as usize);
+            }
+
+            // Extract batch_queue_size if provided
+            if let Some(batch_queue_size) = optional_property!("batchQueueSize", i64, js_obj) {
+                builder = builder.batch_queue_size(batch_queue_size as usize);
+            }
+
+            // Extract linger if provided (in milliseconds)
+            if let Some(linger_ms) = optional_property!("linger", i64, js_obj) {
+                builder = builder.linger(Duration::from_millis(linger_ms as u64));
+            }
+
+            // Build the config
+            match builder.build() {
+                Ok(config) => Ok(Self { inner: config }),
+                Err(err) => Err(NjError::Other(format!(
+                    "Failed to build TopicProducerConfig: {}",
+                    err
+                ))),
+            }
+        } else {
+            Err(NjError::Other("parameter must be a JSON object".to_owned()))
         }
     }
 }
