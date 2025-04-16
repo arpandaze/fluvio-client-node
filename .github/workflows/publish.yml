@@ -102,7 +102,7 @@ jobs:
         #        if: github.event_name == 'workflow_dispatch'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH }}
-        run: npm publish --access public
+        run: npm publish
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
