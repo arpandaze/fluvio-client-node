@@ -1,6 +1,6 @@
 {
     "name": "@echowin/fluvio-client",
-    "version": "0.15.4",
+    "version": "0.15.5",
     "description": "Node.js binding for Fluvio distributed stream",
     "keywords": [
         "fluvio",
